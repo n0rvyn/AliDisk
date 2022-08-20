@@ -28,7 +28,7 @@
 ##### 1. 登陆
 aligo提供了两种方式登陆，不指定接受邮箱时直接打开二维码，扫码登陆；或者指定接受二维码的邮箱，在收件中扫码登陆。
 
-![[Screen Shot 2022-08-20 at 18.54.39.png | 700]]
+<img src="https://norvyn.com/wp-content/uploads/2022/08/Screen-Shot-2022-08-20-at-18.54.39.png" width="70%">
 
 So easy! 不费话。
 
@@ -36,7 +36,7 @@ So easy! 不费话。
 `cd test`
 `rm batt<tab>`
 
-![[ezgif-4-95078e96b5.gif | 400]]
+<img src="https://norvyn.com/wp-content/uploads/2022/08/ezgif-4-95078e96b5.gif" width="40%">
 
 ##### 3.明天再补充
 ```
