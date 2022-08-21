@@ -16,6 +16,7 @@
 
 """
 import glob
+import signal
 import time
 import logging
 import os.path
@@ -23,6 +24,17 @@ import readline
 import sys
 import getopt
 from aligo import Aligo
+from typing import Optional
+from typing_extensions import Literal
+
+
+CheckNameMode = Optional[
+    Literal[
+        'auto_rename',  # automatically rename the file if source & target has the same name
+        'refuse',  # refuse upload
+        'overwrite',  # overwrite without prompt
+    ]
+]
 
 
 class AliDisk(Aligo):
@@ -48,15 +60,19 @@ class AliDisk(Aligo):
         print(f'total {len(files)}')
 
         for _f in files:
-            # print(f'{_f.file_id:<42s}{_f.type:<8s}{_f.name:<10s}')
-            _type = _f.type.replace('folder', 'd').replace('file', '-')
-            _size = _f.size if _f.size is not None else 0
-            _name = _f.name
+            try:
 
-            # for auto-complete shell input
-            self.file_names.append(_name)
+                _type = _f.type.replace('folder', 'd').replace('file', '-')
+                _size = _f.size if _f.size is not None else 0
+                _name = _f.name
 
-            print(f'{_type:<3s}{_size:<8d}{_name:<10s}')
+                # for auto-complete shell input
+                self.file_names.append(_name)
+
+                print(f'{_type:<3s}{_size:<8d}{_name:<10s}')
+
+            except AttributeError:
+                pass
 
     def pwd_files(self):
         if self.PWD in ['/', '/Default']:
@@ -65,7 +81,7 @@ class AliDisk(Aligo):
             file_id = self.get_path_id(self.PWD)
 
         try:
-            time.sleep(3)
+            time.sleep(5)
             return [file.name for file in self.get_file_list(parent_file_id=file_id)]
         except AttributeError:
             return []
@@ -145,11 +161,6 @@ class AliDisk(Aligo):
         move_to_path = move_to_name = None
         file_id = self.get_path_id(source)
 
-        # if self.path_is_file(source):
-        #     file_id = self.get_file_by_path(source).file_id
-        # elif self.path_is_dir(source):
-        #     file_id = self.get_folder_by_path(source).file_id
-
         if self.path_is_dir(target):
             move_to_path = target
         elif self.path_is_file(target):
@@ -163,39 +174,137 @@ class AliDisk(Aligo):
         else:
             return self.move_file(file_id=file_id, to_parent_file_id=move_to_path_id, new_name=move_to_name)
 
-    def rm(self, *path):
-        for _path in path:
-            # fixme cannot recognise path contains blank or "
-            _path = os.path.join(self.PWD, _path)
+    def rm(self, path):
+        path_delete = []
 
-            self.move_file_to_trash(file_id=self.get_path_id(_path))
+        if path.endswith('*'):
+            path_prefix = path.rstrip('*')
+            files_pwd = self.pwd_files()
 
-    def mkdir(self):
+            for file_name in files_pwd:
+                if file_name.startswith(path_prefix):
+                    path_delete.append(os.path.join(self.PWD, file_name))
+
+        else:
+            path_delete = [os.path.join(self.PWD, path)]
+
+        # todo add support for delete files with regular expression
+        for path in path_delete:
+            self.move_file_to_trash(file_id=self.get_path_id(path))
+
+    def mkdir(self, path):
+        full_path = os.path.join(self.PWD, path)
+
+        name = os.path.basename(full_path)
+        parent_path = os.path.dirname(full_path)
+
+        parent_path_id = self.get_path_id(parent_path)
+        return self.create_folder(name=name, parent_file_id=parent_path_id, check_name_mode='overwrite')
+
+    def upload(self, source, target=None, check_name_mode: CheckNameMode = None):
+        target = target if target is not None else self.PWD  # upload to current working dir, if nothing specified.
+        target = os.path.join(self.PWD, target)
+
+        if os.path.isdir(source):
+            target_parent_path = os.path.dirname(target)
+            target_id = self.get_path_id(target_parent_path)
+
+            try:
+                self.upload_folder(folder_path=source, parent_file_id=target_id,
+                                   check_name_mode='overwrite', folder_check_name_mode=check_name_mode)
+            except AttributeError:
+                print('upload failed')
+
+        if os.path.isfile(source):
+            if self.path_is_dir(target):
+                parent_id = self.get_path_id(target)
+                name = None
+
+            else:
+                parent_id = self.get_path_id(os.path.basename(target))
+                name = os.path.basename(target)
+
+            try:
+                self.upload_file(source, name=name, parent_file_id=parent_id, check_name_mode=check_name_mode)
+            except AttributeError:
+                print('upload failed')
+
+    def upload_many(self, source, target=None, check_name_mode: CheckNameMode = None):
+        source = source.rstrip('*')
+
+        if source.startswith('~'):
+            source = source.replace('~', os.environ['HOME'])
+
+        source_abs_path = os.path.abspath(source)  # for list file in the directory
+
+        source_dirname = os.path.dirname(source_abs_path)
+        source_prefix = os.path.basename(source_abs_path)
+
+        upload_paths = []
+
+        for file in os.listdir(source_dirname):
+            if file.startswith(source_prefix):
+                upload_paths.append(os.path.join(source_dirname, file))
+
+        for path in upload_paths:
+            self.upload(source=path, target=target, check_name_mode=check_name_mode)
+
+    def download(self, source, target=None):
+        for _dir in ['download', 'downloads', 'Downloads', 'Download']:
+            _full_path = os.path.join(os.environ['HOME'], _dir)
+            if os.path.exists(_full_path) and target is None:
+                target = _full_path
+
+        target = target if target is not None else '.'
+
+        source = os.path.join(self.PWD, source)
+        source_id = self.get_path_id(source)
+
+        if self.path_is_file(source):
+            return self.download_file(file_id=source_id, local_folder=target)
+
+        elif self.path_is_dir(source):
+            return self.download_folder(folder_file_id=source_id, local_folder=target)
+
+    def download_many(self, source, target=None):
         pass
 
-    def touch(self):
+    def usage(self):
         pass
 
     def interact_cli(self):
         files_pwd = self.pwd_files()
-
         self.file_names.extend(files_pwd)
+
+        def signal_handler(signum, frame):
+            print('\nCTRL-C signal detected, exit with [q | quit | exit].')
+
+        signal.signal(signal.SIGINT, handler=signal_handler)
 
         prompt = f'{self.user_name} # '
         while True:
-            # files_pwd = self.pwd_files()
+            # files_pwd = self.pwd_files()  # avoid every loop list files in the driver, which cause security issues.
 
             def path_completer(text, state):
                 names = []
-                first_part = ' '.join(text.split()[0:-1])
-                last_part = text.split()[-1]
+
+                if '"' in text:
+                    first_part = '"'.join(text.split('"')[0:-1])
+                    last_part = text.split('"')[-1]
+
+                else:
+                    first_part = ' '.join(text.split()[0:-1])
+                    last_part = text.split()[-1]
 
                 # for f in files_pwd:
                 for f in self.file_names:
                     if f.startswith(last_part):
                         names.append(f)
 
-                return f'{first_part} {names[state]}'
+                if '"' in text:
+                    return f'{first_part}"{names[state]}"'  # auto complete line contains ' '(blank)
+                else:
+                    return f'{first_part} {names[state]}'
 
             readline.set_completer_delims('\t')
 
@@ -246,11 +355,19 @@ class AliDisk(Aligo):
 
             elif _command.startswith('rm'):
                 try:
-                    _opt, *_target = _command.split()
-                    self.rm(*_target)
+                    # _target = _command.split()[-1]  # only support removing 1 file onetime this moment
+                    #
+                    _target = _command.lstrip('rm ').strip('"')
+                    self.rm(_target)
 
                 except IndexError:
                     pass
+
+            elif _command.startswith('upload'):
+                pass
+
+            elif _command.startswith('download'):
+                pass
 
             else:
                 print('command not supported.')
@@ -260,18 +377,52 @@ if __name__ == '__main__':
     ali_disk = AliDisk(mail_addr='beyan@beyan.me', secret='This is my secrets.', level=logging.WARN)
 
     options = sys.argv[1:]
+    mode: CheckNameMode = 'refuse'
 
     if not options:
         ali_disk.interact_cli()
 
     else:
         try:
-            opts, args = getopt.getopt(options, '', [''])
+            opts, args = getopt.getopt(options, 'udoar', ['upload',
+                                                          'download',
+                                                          'overwrite',
+                                                          'auto-rename',
+                                                          'rename',
+                                                          'refuse'])
 
             for opt, arg in opts:
-                pass
+                if opt in ['--overwrite', '-o']:
+                    mode: CheckNameMode = 'overwrite'
+                if opt in ['--auto-rename', '-a']:
+                    mode: CheckNameMode = 'auto_rename'
+                if opt == ['--refuse', '-r']:
+                    mode: CheckNameMode = 'refuse'
 
-        except getopt.GetoptError:
+            for opt, arg in opts:
+                if opt in ['-u', '--upload']:
+                    _source_path = sys.argv[sys.argv.index(opt)+1]
+                    _target_path = sys.argv[sys.argv.index(opt)+2]
+
+                    if _source_path.endswith('*'):  # * in shell always be transferred to real path
+                        # fixme source path MUST be quote by "
+                        ali_disk.upload_many(_source_path, _target_path, mode)
+                    else:
+                        ali_disk.upload(source=_source_path, target=_target_path, check_name_mode=mode)
+
+                elif opt in ['-d', '--download']:
+                    _source_path = sys.argv[sys.argv.index(opt) + 1]
+                    try:
+                        _target_path = sys.argv[sys.argv.index(opt) + 2]
+                    except IndexError:
+                        _target_path = None
+
+                    ali_disk.download(_source_path, target=_target_path)
+
+        except getopt.GetoptError as e:
+            print(e)
+
+        except IndexError:
             pass
 
 
