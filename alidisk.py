@@ -27,7 +27,6 @@ from aligo import Aligo
 from typing import Optional
 from typing_extensions import Literal
 
-
 CheckNameMode = Optional[
     Literal[
         'auto_rename',  # automatically rename the file if source & target has the same name
@@ -229,25 +228,28 @@ class AliDisk(Aligo):
             except AttributeError:
                 print('upload failed')
 
-    def upload_many(self, source, target=None, check_name_mode: CheckNameMode = None):
-        source = source.rstrip('*')
+    def upload_many(self, *source, target=None, check_name_mode: CheckNameMode = None):
+        dirs_upload = []
+        files_upload = []
+        target = '/' if target is None else target
 
-        if source.startswith('~'):
-            source = source.replace('~', os.environ['HOME'])
+        for s in source:
+            if os.path.isfile(s):
+                files_upload.append(s)
 
-        source_abs_path = os.path.abspath(source)  # for list file in the directory
+            if os.path.isdir(s):
+                dirs_upload.append(s)
 
-        source_dirname = os.path.dirname(source_abs_path)
-        source_prefix = os.path.basename(source_abs_path)
+        for d in dirs_upload:
+            print(f'upload directory {d}')
+            self.upload_folder(folder_path=d,
+                               parent_file_id=self.get_path_id(target),
+                               check_name_mode=check_name_mode)
 
-        upload_paths = []
-
-        for file in os.listdir(source_dirname):
-            if file.startswith(source_prefix):
-                upload_paths.append(os.path.join(source_dirname, file))
-
-        for path in upload_paths:
-            self.upload(source=path, target=target, check_name_mode=check_name_mode)
+        print(f'upload files {" ".join(files_upload)}')
+        self.upload_files(file_paths=files_upload,
+                                 parent_file_id=self.get_path_id(target),
+                                 check_name_mode=check_name_mode)
 
     def download(self, source, target=None):
         for _dir in ['download', 'downloads', 'Downloads', 'Download']:
@@ -266,13 +268,39 @@ class AliDisk(Aligo):
         elif self.path_is_dir(source):
             return self.download_folder(folder_file_id=source_id, local_folder=target)
 
-    def download_many(self, source, target=None):
-        pass
+    def download_many(self, *source, target=None):
+        """
+        For now, only support multiple files under the same directory.
+
+        Args:
+            *source:
+            target:
+
+        Returns:
+
+        """
+        print('sleep 5 sec for account audit then start list files')
+        time.sleep(5)
+
+        self.cd(os.path.dirname(source[0]))
+        files_pwd = self.pwd_files()
+
+        for source_path in source:
+            if source_path.endswith('*'):
+                _name_prefix = os.path.basename(source_path.rstrip('*'))
+                for file in files_pwd:
+                    if file.startswith(_name_prefix):
+                        time.sleep(1)
+                        print('download file: ', file)
+                        self.download(source=file, target=target)
+            else:
+                print('download file: ', source_path)
+                self.download(source=source_path, target=target)
 
     def usage(self):
         pass
 
-    def interact_cli(self):
+    def interact_cli(self, oneshot=False):
         files_pwd = self.pwd_files()
         self.file_names.extend(files_pwd)
 
@@ -282,9 +310,9 @@ class AliDisk(Aligo):
         signal.signal(signal.SIGINT, handler=signal_handler)
 
         prompt = f'{self.user_name} # '
+
         while True:
             # files_pwd = self.pwd_files()  # avoid every loop list files in the driver, which cause security issues.
-
             def path_completer(text, state):
                 names = []
 
@@ -363,7 +391,10 @@ class AliDisk(Aligo):
                 except IndexError:
                     pass
 
-            elif _command.startswith('upload'):
+            elif _command.startswith('mkdir'):
+                pass
+
+            elif _command.startswith('upload'):  # todo add sth
                 pass
 
             elif _command.startswith('download'):
@@ -401,29 +432,34 @@ if __name__ == '__main__':
 
             for opt, arg in opts:
                 if opt in ['-u', '--upload']:
-                    _source_path = sys.argv[sys.argv.index(opt)+1]
-                    _target_path = sys.argv[sys.argv.index(opt)+2]
+                    _args_index = sys.argv.index(opt) + 1
+                    _args = sys.argv[_args_index:]  # read all args behind '-u' or '--upload'
 
-                    if _source_path.endswith('*'):  # * in shell always be transferred to real path
-                        # fixme source path MUST be quote by "
-                        ali_disk.upload_many(_source_path, _target_path, mode)
+                    # if not os.path.isdir(_args[-1]) and not os.path.isfile(_args[-1]):
+                    if not os.path.exists(_args[-1]):
+                        _source_path = _args[0:-1]
+                        _target_path = _args[-1]
                     else:
-                        ali_disk.upload(source=_source_path, target=_target_path, check_name_mode=mode)
+                        _source_path = _args
+                        _target_path = '/'
+
+                    ali_disk.upload_many(*_source_path, target=_target_path, check_name_mode=mode)
 
                 elif opt in ['-d', '--download']:
-                    _source_path = sys.argv[sys.argv.index(opt) + 1]
-                    try:
-                        _target_path = sys.argv[sys.argv.index(opt) + 2]
-                    except IndexError:
+                    _args_index = sys.argv.index(opt) + 1
+                    _args = sys.argv[_args_index:]
+
+                    if os.path.exists(_args[-1]):
+                        _source_path = _args[0:-1]
+                        _target_path = _args[-1]
+                    else:
+                        _source_path = _args
                         _target_path = None
 
-                    ali_disk.download(_source_path, target=_target_path)
+                    ali_disk.download_many(*_source_path, target=_target_path)
 
         except getopt.GetoptError as e:
             print(e)
 
         except IndexError:
             pass
-
-
-
